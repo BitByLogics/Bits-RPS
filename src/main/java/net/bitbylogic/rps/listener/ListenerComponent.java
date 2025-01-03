@@ -30,6 +30,10 @@ public class ListenerComponent {
         this(null, null);
     }
 
+    public ListenerComponent(String channel) {
+        this(null, channel);
+    }
+
     public ListenerComponent(String target, String channel) {
         this(target, channel, new HashMap<>());
     }

@@ -6,7 +6,7 @@
 
     <groupId>net.bitbylogic</groupId>
     <artifactId>bits-rps</artifactId>
-    <version>2024.12</version>
+    <version>2025.1</version>
     <packaging>jar</packaging>
 
     <name>Bit's RPS</name>
@@ -45,7 +45,11 @@
     </build>
 
     <repositories>
-
+        <repository>
+            <id>github</id>
+            <name>GitHub BitByLogics Maven Packages</name>
+            <url>https://maven.pkg.github.com/bitbylogics/*</url>
+        </repository>
     </repositories>
 
     <distributionManagement>

@@ -73,6 +73,10 @@ public class ListenerComponent {
         return new Gson().fromJson(data.get(key), type);
     }
 
+    public <T> T getDataOrElse(String key, Class<T> type, T fallback) {
+        return data.containsKey(key) ? getData(key, type) : fallback;
+    }
+
     public RedisTimedRequest getRequestByID(String id) {
         return timedRequests.keySet().stream().filter(request -> request.getId().equalsIgnoreCase(id)).findFirst().orElse(null);
     }

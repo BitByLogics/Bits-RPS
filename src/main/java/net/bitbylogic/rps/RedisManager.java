@@ -29,6 +29,31 @@ public class RedisManager {
     @Setter
     private boolean debug;
 
+    public RedisManager(String host, int port, String password, String sourceId, Config config) {
+        this.SOURCE_ID = sourceId;
+        this.gson = new GsonBuilder().setPrettyPrinting().enableComplexMapKeySerialization()
+                .registerTypeHierarchyAdapter(RedisTimedRequest.class, new TimedRequestSerializer()).create();
+
+        this.clients = new ArrayList<>();
+
+        config.useSingleServer()
+                .setAddress(String.format("redis://%s:%s", host, port))
+                .setPassword(password == null ? null : password.isEmpty() ? null : password)
+                .setPingConnectionInterval(50)
+                .setConnectTimeout(20_000)
+                .setTimeout(25_000_000)
+                .setRetryInterval(750)
+                .setConnectionMinimumIdleSize(4)
+                .setConnectionPoolSize(32);
+
+        try {
+            redissonClient = Redisson.create(config);
+        } catch (Exception exception) {
+            Logger.getGlobal().severe("[REDIS]: Unable to connect to redis, contact developer with error below.");
+            exception.printStackTrace();
+        }
+    }
+
     public RedisManager(String host, int port, String password, String sourceId) {
         this.SOURCE_ID = sourceId;
         this.gson = new GsonBuilder().setPrettyPrinting().enableComplexMapKeySerialization()

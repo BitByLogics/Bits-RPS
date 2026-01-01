@@ -11,7 +11,9 @@ import net.bitbylogic.rps.timed.RedisTimedRequest;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
+import org.redisson.config.DelayStrategy;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
@@ -36,13 +38,13 @@ public class RedisManager {
 
         this.clients = new ArrayList<>();
 
-        config.useSingleServer()
+        config.setPassword(password == null ? null : password.isEmpty() ? null : password)
+                .useSingleServer()
                 .setAddress(String.format("redis://%s:%s", host, port))
-                .setPassword(password == null ? null : password.isEmpty() ? null : password)
-                .setPingConnectionInterval(50)
+                .setPingConnectionInterval(30_000)
                 .setConnectTimeout(20_000)
-                .setTimeout(25_000_000)
-                .setRetryInterval(750)
+                .setTimeout(10_000)
+                .setRetryDelay(i -> Duration.ofSeconds(5))
                 .setConnectionMinimumIdleSize(4)
                 .setConnectionPoolSize(32);
 
@@ -62,13 +64,13 @@ public class RedisManager {
         this.clients = new ArrayList<>();
 
         Config config = new Config();
-        config.useSingleServer()
+        config.setPassword(password == null ? null : password.isEmpty() ? null : password)
+                .useSingleServer()
                 .setAddress(String.format("redis://%s:%s", host, port))
-                .setPassword(password == null ? null : password.isEmpty() ? null : password)
-                .setPingConnectionInterval(50)
+                .setPingConnectionInterval(30_000)
                 .setConnectTimeout(20_000)
-                .setTimeout(25_000_000)
-                .setRetryInterval(750)
+                .setTimeout(10_000)
+                .setRetryDelay(i -> Duration.ofSeconds(5))
                 .setConnectionMinimumIdleSize(4)
                 .setConnectionPoolSize(32);
 

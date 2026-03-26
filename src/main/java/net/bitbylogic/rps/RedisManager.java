@@ -14,7 +14,7 @@ import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
 
 import java.time.Duration;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -24,7 +24,7 @@ public class RedisManager {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().enableComplexMapKeySerialization()
             .registerTypeHierarchyAdapter(RedisTimedRequest.class, new TimedRequestSerializer()).create();
 
-    private final CopyOnWriteArrayList<RedisClient> clients = new CopyOnWriteArrayList<>();
+    private final ConcurrentHashMap<String, RedisClient> clients = new ConcurrentHashMap<>();
     private final String serverId;
 
     private RedissonClient redissonClient;
@@ -88,14 +88,16 @@ public class RedisManager {
      * @return the newly registered RedisClient instance, or the existing RedisClient
      *         instance if a client with the same ID is already registered
      */
-    public RedisClient registerClient(@NotNull String id) {
-        if (clients.stream().anyMatch(client -> client.getClientId().equalsIgnoreCase(id))) {
-            Logger.getGlobal().warning(String.format("[REDIS]: Attempted to register RedisClient with duplicate ID '%s', contact developer.", id));
-            return clients.stream().filter(client -> client.getClientId().equalsIgnoreCase(id)).findFirst().orElse(null);
+    public @NotNull RedisClient registerClient(@NotNull String id) {
+        String key = id.toLowerCase();
+
+        if (clients.containsKey(key)) {
+            Logger.getGlobal().warning("[REDIS]: Attempted to register RedisClient with duplicate ID '" + id + "'");
+            return clients.get(key);
         }
 
         RedisClient client = new RedisClient(this, id);
-        clients.add(client);
+        clients.put(key, client);
 
         return client;
     }

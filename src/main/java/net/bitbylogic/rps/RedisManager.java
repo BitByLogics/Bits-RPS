@@ -7,6 +7,7 @@ import lombok.Setter;
 import net.bitbylogic.rps.client.RedisClient;
 import net.bitbylogic.rps.gson.TimedRequestSerializer;
 import net.bitbylogic.rps.timed.RedisTimedRequest;
+import org.jetbrains.annotations.CheckReturnValue;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.redisson.Redisson;
@@ -88,6 +89,7 @@ public class RedisManager {
      * @return the newly registered RedisClient instance, or the existing RedisClient
      *         instance if a client with the same ID is already registered
      */
+    @CheckReturnValue
     public @NotNull RedisClient registerClient(@NotNull String id) {
         String key = id.toLowerCase();
 

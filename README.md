@@ -23,6 +23,39 @@ Full API documentation is available [here](https://bitbylogics.github.io/Bits-RP
 
 ---
 
+## Installation
+
+**Maven:**
+```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
+<dependencies>
+	<dependency>
+	    <groupId>com.github.BitByLogics</groupId>
+	    <artifactId>Bits-RPS</artifactId>
+	    <version>1.1.0</version>
+	</dependency>
+</dependencies>
+```
+
+**Gradle:**
+```groovy
+repositories {
+    maven { url 'https://jitpack.io' }
+}
+
+dependencies {
+    implementation 'com.github.BitByLogics:Bits-RPS:1.1.0'
+}
+```
+
+---
+
 ## Implementation
 
 ### 1. Initialization

@@ -29,7 +29,7 @@ Full API documentation is available [here](https://bitbylogics.github.io/Bits-RP
 The `RedisManager` handles connection parameters and sets up the internal GSON hierarchy for request/response tracking.
 
 ```java
-// Parameters: host, port, password, sourceId
+// Parameters: host, port, password, serverId
 RedisManager redisManager = new RedisManager("127.0.0.1", 6379, "secret", "server-1");
 ```
 

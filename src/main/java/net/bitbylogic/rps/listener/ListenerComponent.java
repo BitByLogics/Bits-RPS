@@ -1,6 +1,7 @@
 package net.bitbylogic.rps.listener;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import lombok.Getter;
 import lombok.Setter;
 import net.bitbylogic.rps.client.RedisClient;
@@ -18,6 +19,8 @@ import java.util.concurrent.TimeUnit;
 
 @Getter
 public class ListenerComponent {
+
+    private static final Gson GSON = new GsonBuilder().enableComplexMapKeySerialization().create();
 
     @Setter
     private RedisClient source;
@@ -79,7 +82,7 @@ public class ListenerComponent {
      */
     @Contract("_, _ -> this")
     public ListenerComponent addData(@NotNull String key, @NotNull Object object) {
-        data.put(key, new Gson().toJson(object));
+        data.put(key, GSON.toJson(object));
         return this;
     }
 
@@ -148,11 +151,11 @@ public class ListenerComponent {
      */
     @CheckReturnValue
     public <T> T getData(@NotNull String key, @NotNull Class<T> type) {
-        if (source.getRedisManager() == null || !data.containsKey(key)) {
+        if (!data.containsKey(key)) {
             return null;
         }
 
-        return source.getRedisManager().getGson().fromJson(data.get(key), type);
+        return GSON.fromJson(data.get(key), type);
     }
 
     /**

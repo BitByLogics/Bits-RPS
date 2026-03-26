@@ -6,6 +6,7 @@ import lombok.Setter;
 import net.bitbylogic.rps.client.RedisClient;
 import net.bitbylogic.rps.timed.RedisTimedRequest;
 import net.bitbylogic.rps.timed.RedisTimedResponse;
+import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -75,6 +76,7 @@ public class ListenerComponent {
      * @param object the object to serialize and store as the value; must not be null.
      * @return the current instance of {@code ListenerComponent}, allowing method chaining.
      */
+    @Contract("_, _ -> this")
     public ListenerComponent addData(@NotNull String key, @NotNull Object object) {
         data.put(key, new Gson().toJson(object));
         return this;
@@ -87,6 +89,7 @@ public class ListenerComponent {
      * @param value the value to store, associated with the provided key. It cannot be null.
      * @return the current instance of {@code ListenerComponent} to allow for method chaining.
      */
+    @Contract("_, _ -> this")
     public ListenerComponent addDataRaw(@NotNull String key, @NotNull String value) {
         data.put(key, value);
         return this;
@@ -101,6 +104,7 @@ public class ListenerComponent {
      * @param request the {@link RedisTimedRequest} object to be tracked, cannot be {@code null}.
      * @return the current instance of {@link ListenerComponent}, allowing for method chaining.
      */
+    @Contract("_, _, _ -> this")
     public ListenerComponent addTimedRequest(@NotNull TimeUnit unit, int time, @NotNull RedisTimedRequest request) {
         timedRequests.put(request, unit.toMillis(time));
         return this;
@@ -112,6 +116,7 @@ public class ListenerComponent {
      * @param response the {@link RedisTimedResponse} to be added. Must not be {@code null}.
      * @return the {@code ListenerComponent} instance for method-chaining.
      */
+    @Contract("_ -> this")
     public ListenerComponent addTimedResponse(@NotNull RedisTimedResponse response) {
         timedResponses.add(response);
         return this;
@@ -125,6 +130,7 @@ public class ListenerComponent {
      *                        otherwise, it is disabled.
      * @return the current instance of {@code ListenerComponent}, allowing for method chaining.
      */
+    @Contract("_ -> this")
     public ListenerComponent selfActivation(boolean selfActivation) {
         this.allowRequestSelfActivation = selfActivation;
         return this;
@@ -140,11 +146,11 @@ public class ListenerComponent {
      * @return the deserialized object of type {@code T}, or {@code null} if the key is not found in the data
      */
     public <T> T getData(@NotNull String key, @NotNull Class<T> type) {
-        if (!data.containsKey(key)) {
+        if (source.getRedisManager() == null || !data.containsKey(key)) {
             return null;
         }
 
-        return new Gson().fromJson(data.get(key), type);
+        return source.getRedisManager().getGson().fromJson(data.get(key), type);
     }
 
     /**

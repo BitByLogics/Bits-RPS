@@ -1,4 +1,4 @@
-package net.bitbylogic.rps.gson;
+package net.bitbylogic.rps;
 
 import com.google.gson.*;
 import net.bitbylogic.rps.timed.RedisTimedRequest;
@@ -6,7 +6,7 @@ import net.bitbylogic.rps.timed.RedisTimedRequest;
 import java.lang.reflect.Type;
 import java.util.UUID;
 
-public class TimedRequestSerializer implements JsonSerializer<RedisTimedRequest>, JsonDeserializer<RedisTimedRequest> {
+class TimedRequestSerializer implements JsonSerializer<RedisTimedRequest>, JsonDeserializer<RedisTimedRequest> {
 
     @Override
     public JsonElement serialize(RedisTimedRequest src, Type typeOfSrc, JsonSerializationContext context) {
@@ -25,7 +25,7 @@ public class TimedRequestSerializer implements JsonSerializer<RedisTimedRequest>
 
         UUID uniqueId = UUID.fromString(object.get("uniqueId").getAsString());
         String id = object.get("id").getAsString();
-        String channel = object.get("channel") == null ? null : object.get("channel").getAsString();
+        String channel = object.get("channel") == null ? "" : object.get("channel").getAsString();
 
         return new RedisTimedRequest(uniqueId, id, channel);
     }

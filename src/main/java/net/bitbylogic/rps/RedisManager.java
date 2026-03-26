@@ -5,7 +5,6 @@ import com.google.gson.GsonBuilder;
 import lombok.Getter;
 import lombok.Setter;
 import net.bitbylogic.rps.client.RedisClient;
-import net.bitbylogic.rps.gson.TimedRequestSerializer;
 import net.bitbylogic.rps.timed.RedisTimedRequest;
 import org.jetbrains.annotations.CheckReturnValue;
 import org.jetbrains.annotations.NotNull;

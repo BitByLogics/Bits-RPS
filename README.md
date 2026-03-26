@@ -17,6 +17,12 @@ Bits-RPS abstracts the complexity of Redisson's `RTopic` into a managed system o
 
 ---
 
+## Documentation
+
+Full API documentation is available [here](https://bitbylogics.github.io/Bits-RPS/)
+
+---
+
 ## Implementation
 
 ### 1. Initialization

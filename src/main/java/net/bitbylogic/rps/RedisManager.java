@@ -2,68 +2,50 @@ package net.bitbylogic.rps;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
 import net.bitbylogic.rps.client.RedisClient;
 import net.bitbylogic.rps.gson.TimedRequestSerializer;
 import net.bitbylogic.rps.timed.RedisTimedRequest;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
-import org.redisson.config.DelayStrategy;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 @Getter
 public class RedisManager {
 
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().enableComplexMapKeySerialization()
+            .registerTypeHierarchyAdapter(RedisTimedRequest.class, new TimedRequestSerializer()).create();
+
+    private final CopyOnWriteArrayList<RedisClient> clients = new CopyOnWriteArrayList<>();
+    private final String serverId;
+
     private RedissonClient redissonClient;
-    private final List<RedisClient> clients;
 
-    @Getter(AccessLevel.NONE)
-    private final String SOURCE_ID;
-
-    private final Gson gson;
     @Setter
     private boolean debug;
 
-    public RedisManager(String host, int port, String password, String sourceId, Config config) {
-        this.SOURCE_ID = sourceId;
-        this.gson = new GsonBuilder().setPrettyPrinting().enableComplexMapKeySerialization()
-                .registerTypeHierarchyAdapter(RedisTimedRequest.class, new TimedRequestSerializer()).create();
-
-        this.clients = new ArrayList<>();
-
-        config.setPassword(password == null ? null : password.isEmpty() ? null : password)
-                .useSingleServer()
-                .setAddress(String.format("redis://%s:%s", host, port))
-                .setPingConnectionInterval(30_000)
-                .setConnectTimeout(20_000)
-                .setTimeout(10_000)
-                .setRetryDelay(i -> Duration.ofSeconds(5))
-                .setConnectionMinimumIdleSize(4)
-                .setConnectionPoolSize(32);
-
-        try {
-            redissonClient = Redisson.create(config);
-        } catch (Exception exception) {
-            Logger.getGlobal().severe("[REDIS]: Unable to connect to redis, contact developer with error below.");
-            exception.printStackTrace();
-        }
-    }
-
-    public RedisManager(String host, int port, String password, String sourceId) {
-        this.SOURCE_ID = sourceId;
-        this.gson = new GsonBuilder().setPrettyPrinting().enableComplexMapKeySerialization()
-                .registerTypeHierarchyAdapter(RedisTimedRequest.class, new TimedRequestSerializer()).create();
-
-        this.clients = new ArrayList<>();
+    /**
+     * Constructs a new RedisManager instance with the specified host, port, password, and server ID.
+     * Initializes the RedissonClient with a single server configuration.
+     *
+     * @param host      the hostname or IP address of the Redis server; must not be null
+     * @param port      the port number for the Redis server
+     * @param password  the password for the Redis server; can be null or empty if no authentication is required
+     * @param serverId  the unique identifier for the server; must not be null
+     */
+    public RedisManager(@NotNull String host, int port, @Nullable String password, @NotNull String serverId) {
+        this.serverId = serverId;
 
         Config config = new Config();
+
         config.setPassword(password == null ? null : password.isEmpty() ? null : password)
                 .useSingleServer()
                 .setAddress(String.format("redis://%s:%s", host, port))
@@ -77,22 +59,39 @@ public class RedisManager {
         try {
             redissonClient = Redisson.create(config);
         } catch (Exception exception) {
-            Logger.getGlobal().severe("[REDIS]: Unable to connect to redis, contact developer with error below.");
-            exception.printStackTrace();
+            Logger.getGlobal().log(Level.SEVERE, "[REDIS]: Unable to connect to redis, contact developer with error below.", exception);
         }
     }
 
     /**
-     * Registers a new RedisClient. Used to send and receive
-     * messages.
+     * Creates a new instance of the RedisManager class, initializing the
+     * RedissonClient instance with the given configuration.
      *
-     * @param id The id for the RedisClient.
-     * @return The new RedisClient instance.
+     * @param redisConfig the configuration object for the Redis connection; must not be null
+     * @param serverId    the unique identifier for the server; must not be null
      */
-    public RedisClient registerClient(String id) {
-        if (clients.stream().anyMatch(client -> client.getID().equalsIgnoreCase(id))) {
+    public RedisManager(@NotNull Config redisConfig, @NotNull String serverId) {
+        this.serverId = serverId;
+
+        try {
+            redissonClient = Redisson.create(redisConfig);
+        } catch (Exception exception) {
+            Logger.getGlobal().log(Level.SEVERE, "[REDIS]: Unable to connect to redis, contact developer with error below.", exception);
+        }
+    }
+
+    /**
+     * Registers a new RedisClient with the specified ID. If a client with the same ID
+     * already exists, it returns the existing client instead of creating a new one.
+     *
+     * @param id the unique identifier for the RedisClient to register; must not be null
+     * @return the newly registered RedisClient instance, or the existing RedisClient
+     *         instance if a client with the same ID is already registered
+     */
+    public RedisClient registerClient(@NotNull String id) {
+        if (clients.stream().anyMatch(client -> client.getClientId().equalsIgnoreCase(id))) {
             Logger.getGlobal().warning(String.format("[REDIS]: Attempted to register RedisClient with duplicate ID '%s', contact developer.", id));
-            return clients.stream().filter(client -> client.getID().equalsIgnoreCase(id)).findFirst().orElse(null);
+            return clients.stream().filter(client -> client.getClientId().equalsIgnoreCase(id)).findFirst().orElse(null);
         }
 
         RedisClient client = new RedisClient(this, id);
@@ -102,13 +101,12 @@ public class RedisManager {
     }
 
     /**
-     * Get the source id. Used to identify where a message
-     * is sent and received from.
+     * Retrieves the instance of {@code Gson} used by the {@code RedisManager}.
      *
-     * @return The source id.
+     * @return the {@code Gson} instance used for JSON serialization and deserialization.
      */
-    public String getSourceID() {
-        return SOURCE_ID;
+    public Gson getGson() {
+        return GSON;
     }
 
 }

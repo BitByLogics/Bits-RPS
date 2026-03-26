@@ -11,9 +11,11 @@ public class TimedRequestSerializer implements JsonSerializer<RedisTimedRequest>
     @Override
     public JsonElement serialize(RedisTimedRequest src, Type typeOfSrc, JsonSerializationContext context) {
         JsonObject object = new JsonObject();
+
         object.addProperty("uniqueId", src.getUniqueId().toString());
         object.addProperty("id", src.getId());
         object.addProperty("channel", src.getChannel());
+
         return object;
     }
 

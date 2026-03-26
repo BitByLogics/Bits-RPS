@@ -80,7 +80,7 @@ The library utilizes a standardized routing header in every `ListenerComponent`:
 | Field | Purpose |
 | :--- | :--- |
 | **source** | Automatically populated with the sending `RedisClient` metadata. |
-| **target** | If null, the message is broadcast. If set, only the matching `sourceId` processes it. |
+| **target** | If null, the message is broadcast. If set, only the matching `serverId` processes it. |
 | **channel** | The Redis topic identifier. |
 | **data** | A Map of serialized objects stored as JSON strings. |
 

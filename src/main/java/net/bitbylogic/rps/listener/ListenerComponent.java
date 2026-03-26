@@ -6,6 +6,7 @@ import lombok.Setter;
 import net.bitbylogic.rps.client.RedisClient;
 import net.bitbylogic.rps.timed.RedisTimedRequest;
 import net.bitbylogic.rps.timed.RedisTimedResponse;
+import org.jetbrains.annotations.CheckReturnValue;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -145,6 +146,7 @@ public class ListenerComponent {
      * @param type the {@code Class} object representing the type to deserialize to; must not be {@code null}
      * @return the deserialized object of type {@code T}, or {@code null} if the key is not found in the data
      */
+    @CheckReturnValue
     public <T> T getData(@NotNull String key, @NotNull Class<T> type) {
         if (source.getRedisManager() == null || !data.containsKey(key)) {
             return null;
@@ -163,6 +165,7 @@ public class ListenerComponent {
      * @param fallback the fallback value to return if the key is not found in the data; must not be null
      * @return the deserialized object of type {@code T} if the key is found, or the provided fallback value otherwise
      */
+    @CheckReturnValue
     public <T> T getDataOrElse(@NotNull String key, @NotNull Class<T> type, @NotNull T fallback) {
         return data.containsKey(key) ? getData(key, type) : fallback;
     }
@@ -174,6 +177,7 @@ public class ListenerComponent {
      * @param id the unique identifier of the request to retrieve; must not be {@code null}.
      * @return the {@link RedisTimedRequest} associated with the given ID, or {@code null} if no matching request is found.
      */
+    @CheckReturnValue
     public RedisTimedRequest getRequestByID(@NotNull String id) {
         return timedRequests.keySet().stream().filter(request -> request.getId().equalsIgnoreCase(id)).findFirst().orElse(null);
     }

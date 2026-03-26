@@ -34,7 +34,7 @@ public abstract class RedisMessageListener {
      * Enables self-activation by setting the {@code selfActivation} flag to {@code true}.
      * This method allows the listener to be activated by components sent from the same server.
      */
-    private void setAllowSelfActivation() {
+    protected void setAllowSelfActivation() {
         selfActivation = true;
     }
 

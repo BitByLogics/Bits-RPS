@@ -54,7 +54,7 @@ public class ListenerComponent {
      * @param targetServerId the ID of the target server associated with this ListenerComponent. Can be {@code null}.
      * @param channel the name of the Redis channel associated with this ListenerComponent. Can be {@code null}.
      */
-    private ListenerComponent(@Nullable String targetServerId, @Nullable String channel) {
+    public ListenerComponent(@Nullable String targetServerId, @Nullable String channel) {
         this(targetServerId, channel, new HashMap<>());
     }
 

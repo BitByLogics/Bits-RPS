@@ -8,8 +8,6 @@ A developer-focused Redis Pub/Sub (RPS) wrapper built on top of Redisson. This l
 
 Bits-RPS abstracts the complexity of Redisson's `RTopic` into a managed system of clients and listeners. It features a built-in request-response pattern with timeout handling and automated JSON serialization via Gson.
 
-
-
 ### Key Components
 
 * **RedisManager**: The central controller for the Redisson connection pool and GSON configuration.
@@ -26,7 +24,7 @@ The `RedisManager` handles connection parameters and sets up the internal GSON h
 
 ```java
 // Parameters: host, port, password, sourceId
-RedisManager redisManager = new RedisManager("127.0.0.1", 6379, "secret", "server-01");
+RedisManager redisManager = new RedisManager("127.0.0.1", 6379, "secret", "server-1");
 ```
 
 ### 2. Registering a Client and Listener
@@ -86,5 +84,5 @@ The library utilizes a standardized routing header in every `ListenerComponent`:
 
 The project relies on the following stack:
 * **Redisson**: High-level Java Redis client.
-* **Lombok**: For boilerplate reduction.
+* **Lombok**: For boilerplate reduction. (_Will remove eventually, I know_)
 * **Gson**: For object serialization.

@@ -2,6 +2,7 @@ package net.bitbylogic.rps.timed;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.UUID;
 
@@ -12,7 +13,14 @@ public class RedisTimedResponse {
     private final UUID uniqueId;
     private final String id;
 
-    public RedisTimedResponse(RedisTimedRequest request) {
+    /**
+     * Constructs a new instance of the RedisTimedResponse class by extracting required
+     * fields from the provided RedisTimedRequest object.
+     *
+     * @param request the RedisTimedRequest object containing the unique identifier
+     *                and the request ID to initialize the RedisTimedResponse. Must not be null.
+     */
+    public RedisTimedResponse(@NotNull RedisTimedRequest request) {
         this.uniqueId = request.getUniqueId();
         this.id = request.getId();
     }

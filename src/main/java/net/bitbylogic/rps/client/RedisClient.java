@@ -146,7 +146,7 @@ public class RedisClient {
 
     /**
      * Retrieves the Redisson client instance used to interact with Redis.
-     *
+     * <p>
      * This method provides access to the underlying {@link RedissonClient}
      * which enables operations such as data storage, messaging, and synchronization
      * across Redis.

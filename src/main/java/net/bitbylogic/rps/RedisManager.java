@@ -21,7 +21,7 @@ import java.util.logging.Logger;
 @Getter
 public class RedisManager {
 
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().enableComplexMapKeySerialization()
+    private static final Gson GSON = new GsonBuilder().enableComplexMapKeySerialization()
             .registerTypeHierarchyAdapter(RedisTimedRequest.class, new TimedRequestSerializer()).create();
 
     private final ConcurrentHashMap<String, RedisClient> clients = new ConcurrentHashMap<>();

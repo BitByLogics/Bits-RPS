@@ -50,7 +50,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.github.BitByLogics:Bits-RPS:1.1.0'
+    implementation 'com.github.BitByLogics:Bits-RPS:1.2.0'
 }
 ```
 

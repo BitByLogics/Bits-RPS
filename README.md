@@ -38,7 +38,7 @@ Full API documentation is available [here](https://bitbylogics.github.io/Bits-RP
 	<dependency>
 	    <groupId>com.github.BitByLogics</groupId>
 	    <artifactId>Bits-RPS</artifactId>
-	    <version>1.1.0</version>
+	    <version>1.2.0</version>
 	</dependency>
 </dependencies>
 ```

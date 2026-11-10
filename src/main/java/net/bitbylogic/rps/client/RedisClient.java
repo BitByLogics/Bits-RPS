@@ -1,228 +1,611 @@
 package net.bitbylogic.rps.client;
 
-import com.google.gson.JsonSyntaxException;
 import lombok.Getter;
 import net.bitbylogic.rps.RedisManager;
-import net.bitbylogic.rps.listener.ListenerComponent;
+import net.bitbylogic.rps.listener.ReceivedMessage;
 import net.bitbylogic.rps.listener.RedisMessageListener;
-import net.bitbylogic.rps.timed.RedisTimedRequest;
+import net.bitbylogic.rps.model.RedisMessage;
 import org.jetbrains.annotations.NotNull;
 import org.redisson.api.RTopic;
-import org.redisson.api.RedissonClient;
+import org.redisson.client.codec.StringCodec;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 
+import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 
-@Getter
-public class RedisClient {
+public class RedisClient implements AutoCloseable {
 
+    private static final Duration FALLBACK_TIMEOUT = Duration.ofSeconds(1);
+    private static final String RESPONSE_TOPIC_FORMAT = "rps:response:%s:%s";
     private static final String INCOMING_DEBUG_FORMAT = "[INCOMING]: %s -> %s: %s";
     private static final String OUTGOING_DEBUG_FORMAT = "[OUTGOING]: %s -> %s: %s";
-    private static final String TIMED_RESPONSE_DEBUG_FORMAT = "[TIMED RESPONSE]: %s -> %s: %s";
 
-    private static final String REQUEST_TOPIC_ID = "INTERNAL_REDIS_REQUESTS";
+    private final CopyOnWriteArrayList<RedisMessageListener<?>> listeners = new CopyOnWriteArrayList<>();
+    private final ConcurrentHashMap<UUID, RedisRequest<?>> pendingRequests = new ConcurrentHashMap<>();
+    private final Map<String, Integer> channelSubscriptions = new HashMap<>();
+    private final ReentrantLock subscriptionLock = new ReentrantLock();
+    private final ScheduledThreadPoolExecutor scheduler;
 
-    private final transient CopyOnWriteArrayList<RedisMessageListener> listeners = new CopyOnWriteArrayList<>();
-    private final transient CopyOnWriteArrayList<RedisTimedRequest> timedRequests = new CopyOnWriteArrayList<>();
-    private final transient ConcurrentHashMap<RedisTimedRequest, Timer> requestTimers = new ConcurrentHashMap<>();
+    @Getter
+    private final RedisManager manager;
 
-    private final String serverId;
+    @Getter
     private final String clientId;
 
-    private final transient RedisManager redisManager;
+    private Integer responseSubscription;
 
-    /**
-     * Constructs a new RedisClient instance with the specified RedisManager and client ID.
-     * Initializes the client with the server ID retrieved from the RedisManager and registers
-     * the request topic for message handling.
-     *
-     * @param redisManager The RedisManager instance responsible for managing Redis operations. Must not be null.
-     * @param clientId The unique identifier for this RedisClient instance. Must not be null.
-     */
-    public RedisClient(@NotNull RedisManager redisManager, @NotNull String clientId) {
-        this.redisManager = redisManager;
-        this.serverId = redisManager.getServerId();
+    @Getter
+    private volatile boolean closed;
+
+    public RedisClient(@NotNull RedisManager manager, @NotNull String clientId) {
+        this.manager = manager;
         this.clientId = clientId;
 
-        registerRequestTopic();
+        this.scheduler = new ScheduledThreadPoolExecutor(1, runnable -> {
+            Thread thread = new Thread(runnable, "bits-rps-" + clientId + "-timeouts");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.scheduler.setRemoveOnCancelPolicy(true);
     }
 
-    /**
-     * Registers a Redis message listener with the client. This method ensures that the provided
-     * listener is not already registered. If the listener is being registered for the first time,
-     * it is added to the internal list of listeners, associated with the current client instance,
-     * and the listener's subscription channel is registered for incoming messages.
-     *
-     * @param listener The Redis message listener to register. Must not be null.
-     */
-    public void registerListener(@NotNull RedisMessageListener listener) {
-        if (listeners.contains(listener)) {
-            Logger.getGlobal().warning(String.format("Attempted to register listener %s twice!", listener.getClass().getName()));
-            return;
+    public @NotNull String getServerId() {
+        return manager.getServerId();
+    }
+
+    public boolean registerListener(@NotNull RedisMessageListener<?> listener) {
+        if (closed) {
+            manager.getLogger().warning("[REDIS]: Attempted to register a listener on closed client '" + clientId + "'.");
+            return false;
         }
 
-        listeners.add(listener);
-        listener.setClient(this);
+        if (manager.getRedissonClient().isShutdown()) {
+            manager.getLogger().warning("[REDIS]: Attempted to register a listener after the Redis connection was shut down.");
+            return false;
+        }
 
-        registerChannel(listener.getChannelName());
+        if (!listeners.addIfAbsent(listener)) {
+            manager.getLogger().warning("[REDIS]: Attempted to register listener " + listener.getClass().getName() + " twice.");
+            return false;
+        }
+
+        try {
+            subscribeChannel(listener.getChannel());
+        } catch (RuntimeException exception) {
+            listeners.remove(listener);
+            manager.getLogger().log(Level.SEVERE, "[REDIS]: Unable to subscribe to channel '" + listener.getChannel() + "'.", exception);
+            return false;
+        }
+
+        return true;
     }
 
-    /**
-     * Sends a listener message to a Redis topic and handles timed requests associated with the message.
-     * This method binds the provided {@link ListenerComponent} to the current {@code RedisClient} instance as its source,
-     * processes any timed requests defined in the component, and publishes the message to a Redis topic.
-     * Debug information can also be logged if enabled in the RedisManager.
-     *
-     * @param component The {@link ListenerComponent} to be sent. Must not be null.
-     *                  The component encapsulates channel, target server, data, and potentially timed requests.
-     */
-    public void sendListenerMessage(@NotNull ListenerComponent component) {
-        component.setSource(this);
+    public <T> @NotNull RedisMessageListener<T> registerListener(@NotNull String channel, @NotNull Class<T> payloadType, @NotNull Consumer<ReceivedMessage<T>> handler) {
+        RedisMessageListener<T> listener = new RedisMessageListener<>(channel, payloadType) {
+            @Override
+            public void onReceive(@NotNull ReceivedMessage<T> message) {
+                handler.accept(message);
+            }
+        };
 
-        component.getTimedRequests().forEach((request, expireTime) -> {
-            if (expireTime == -1) {
-                timedRequests.add(request);
+        registerListener(listener);
+        return listener;
+    }
+
+    public boolean unregisterListener(@NotNull RedisMessageListener<?> listener) {
+        if (!listeners.remove(listener)) {
+            return false;
+        }
+
+        String channel = listener.getChannel();
+
+        subscriptionLock.lock();
+
+        try {
+            if (hasListeners(channel)) {
+                return true;
+            }
+
+            Integer subscriptionId = channelSubscriptions.remove(channel);
+
+            if (subscriptionId == null) {
+                return true;
+            }
+
+            getTopic(channel).removeListener(subscriptionId);
+        } catch (RuntimeException exception) {
+            manager.getLogger().log(Level.WARNING, "[REDIS]: Unable to unsubscribe from channel '" + channel + "'.", exception);
+        } finally {
+            subscriptionLock.unlock();
+        }
+
+        return true;
+    }
+
+    public boolean send(@NotNull String channel, @NotNull Object payload) {
+        return sendTo(null, channel, payload);
+    }
+
+    public boolean sendTo(String targetServerId, @NotNull String channel, @NotNull Object payload) {
+        RedisMessage message = createMessage(channel, targetServerId, payload);
+
+        if (message == null) {
+            return false;
+        }
+
+        return publish(channel, message);
+    }
+
+    public @NotNull CompletableFuture<Boolean> sendAsync(@NotNull String channel, @NotNull Object payload) {
+        return sendToAsync(null, channel, payload);
+    }
+
+    public @NotNull CompletableFuture<Boolean> sendToAsync(String targetServerId, @NotNull String channel, @NotNull Object payload) {
+        RedisMessage message = createMessage(channel, targetServerId, payload);
+
+        if (message == null) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        return publishAsync(channel, message);
+    }
+
+    public <R> @NotNull RedisRequest<R> request(@NotNull String channel, @NotNull Object payload, @NotNull Class<R> responseType, @NotNull Duration timeout) {
+        Duration effectiveTimeout = timeout;
+
+        if (timeout.isNegative() || timeout.isZero()) {
+            manager.getLogger().warning("[REDIS]: Request timeout on channel '" + channel + "' must be positive, using " + FALLBACK_TIMEOUT.toSeconds() + " second.");
+            effectiveTimeout = FALLBACK_TIMEOUT;
+        }
+
+        return new RedisRequest<>(this, channel, payload, responseType, effectiveTimeout);
+    }
+
+    public boolean reply(@NotNull ReceivedMessage<?> received, @NotNull Object responsePayload) {
+        RedisMessage message = createReply(received, responsePayload);
+
+        if (message == null) {
+            return false;
+        }
+
+        return publish(responseTopicName(received.getSourceServerId(), received.getSourceClientId()), message);
+    }
+
+    public @NotNull CompletableFuture<Boolean> replyAsync(@NotNull ReceivedMessage<?> received, @NotNull Object responsePayload) {
+        RedisMessage message = createReply(received, responsePayload);
+
+        if (message == null) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        return publishAsync(responseTopicName(received.getSourceServerId(), received.getSourceClientId()), message);
+    }
+
+    @Override
+    public void close() {
+        subscriptionLock.lock();
+
+        try {
+            if (closed) {
                 return;
             }
 
-            final Timer requestTimer = new Timer();
+            closed = true;
 
-            requestTimer.schedule(new TimerTask() {
-                @Override
-                public void run() {
-                    timedRequests.remove(request);
-                    request.getTimeoutCallback().accept(null);
-                    requestTimer.cancel();
-                }
-            }, expireTime);
+            for (Map.Entry<String, Integer> entry : channelSubscriptions.entrySet()) {
+                removeSubscription(entry.getKey(), entry.getValue());
+            }
 
-            timedRequests.add(request);
-            requestTimers.put(request, requestTimer);
-        });
+            channelSubscriptions.clear();
 
-        if (redisManager.isDebug()) {
-            Logger.getGlobal().info(String.format(OUTGOING_DEBUG_FORMAT, component.getSource().getClientId(), component.getTargetServerId(), redisManager.getGson().toJson(component)));
+            if (responseSubscription != null) {
+                removeSubscription(responseTopicName(getServerId(), clientId), responseSubscription);
+                responseSubscription = null;
+            }
+        } finally {
+            subscriptionLock.unlock();
         }
 
-        getTopic(component.getChannel()).publish(redisManager.getGson().toJson(component));
+        listeners.clear();
+
+        for (RedisRequest<?> request : pendingRequests.values()) {
+            request.cancel();
+        }
+
+        pendingRequests.clear();
+        scheduler.shutdownNow();
+        manager.unregisterClient(this);
     }
 
-    /**
-     * Sends a timed response message using the specified {@code ListenerComponent}.
-     * This method binds the provided {@link ListenerComponent} to the current {@link RedisClient} instance as its source,
-     * verifies that at least one timed response is defined in the component, and then publishes the component as a
-     * message to a Redis topic. If debug mode is enabled in the {@link RedisManager}, debug information about the
-     * operation is logged.
-     *
-     * @param component The {@link ListenerComponent} containing the timed responses to be sent. Must not be null*/
-    public void sendTimedResponse(@NotNull ListenerComponent component) {
-        component.setSource(this);
+    boolean dispatchRequest(@NotNull RedisRequest<?> request) {
+        RedisMessage message = registerRequest(request);
 
-        if (component.getTimedResponses().isEmpty()) {
-            Logger.getGlobal().warning("Attempted to send response with no responses!");
+        if (message == null) {
+            return false;
+        }
+
+        if (publish(request.getChannel(), message)) {
+            return true;
+        }
+
+        abandonRequest(message.id(), request);
+        return false;
+    }
+
+    CompletableFuture<Boolean> dispatchRequestAsync(@NotNull RedisRequest<?> request) {
+        RedisMessage message = registerRequest(request);
+
+        if (message == null) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        return publishAsync(request.getChannel(), message).thenApply(published -> {
+            if (!published) {
+                abandonRequest(message.id(), request);
+            }
+
+            return published;
+        });
+    }
+
+    void runCallback(String description, Runnable task) {
+        try {
+            manager.getCallbackExecutor().execute(() -> {
+                try {
+                    task.run();
+                } catch (RuntimeException exception) {
+                    manager.getLogger().log(Level.SEVERE, "[REDIS]: " + description + " threw an exception.", exception);
+                }
+            });
+        } catch (RuntimeException exception) {
+            manager.getLogger().log(Level.SEVERE, "[REDIS]: The callback executor rejected: " + description + ".", exception);
+        }
+    }
+
+    private RedisMessage registerRequest(RedisRequest<?> request) {
+        String channel = request.getChannel();
+
+        if (!canSend(channel)) {
+            return null;
+        }
+
+        JsonNode tree = toTree(request.getPayload());
+
+        if (tree == null) {
+            return null;
+        }
+
+        try {
+            subscribeResponses();
+        } catch (RuntimeException exception) {
+            manager.getLogger().log(Level.SEVERE, "[REDIS]: Unable to subscribe to the response topic of client '" + clientId + "'.", exception);
+            return null;
+        }
+
+        UUID requestId = UUID.randomUUID();
+        RedisMessage message = new RedisMessage(requestId, channel, getServerId(), clientId, request.getTargetServerId(), null, tree);
+
+        pendingRequests.put(requestId, request);
+
+        try {
+            ScheduledFuture<?> task = scheduler.schedule(() -> expireRequest(requestId), request.getTimeout().toMillis(), TimeUnit.MILLISECONDS);
+            request.setTimeoutTask(task);
+        } catch (RuntimeException exception) {
+            pendingRequests.remove(requestId);
+            manager.getLogger().log(Level.WARNING, "[REDIS]: Unable to schedule the timeout of a request on channel '" + channel + "'.", exception);
+            return null;
+        }
+
+        return message;
+    }
+
+    private void abandonRequest(UUID requestId, RedisRequest<?> request) {
+        pendingRequests.remove(requestId);
+        request.cancel();
+    }
+
+    private RedisMessage createMessage(String channel, String targetServerId, Object payload) {
+        if (!canSend(channel)) {
+            return null;
+        }
+
+        JsonNode tree = toTree(payload);
+
+        if (tree == null) {
+            return null;
+        }
+
+        return new RedisMessage(UUID.randomUUID(), channel, getServerId(), clientId, targetServerId, null, tree);
+    }
+
+    private RedisMessage createReply(ReceivedMessage<?> received, Object responsePayload) {
+        RedisMessage original = received.getMessage();
+
+        if (closed) {
+            manager.getLogger().warning("[REDIS]: Attempted to reply on closed client '" + clientId + "'.");
+            return null;
+        }
+
+        if (original.sourceClientId() == null) {
+            manager.getLogger().warning("[REDIS]: Cannot reply to a message without a source client on channel '" + original.channel() + "'.");
+            return null;
+        }
+
+        JsonNode tree = toTree(responsePayload);
+
+        if (tree == null) {
+            return null;
+        }
+
+        return new RedisMessage(UUID.randomUUID(), original.channel(), getServerId(), clientId, original.sourceServerId(), original.id(), tree);
+    }
+
+    private boolean canSend(String channel) {
+        if (closed) {
+            manager.getLogger().warning("[REDIS]: Attempted to send on closed client '" + clientId + "'.");
+            return false;
+        }
+
+        if (manager.getRedissonClient().isShutdown()) {
+            manager.getLogger().warning("[REDIS]: Attempted to send after the Redis connection was shut down.");
+            return false;
+        }
+
+        if (channel.isBlank()) {
+            manager.getLogger().warning("[REDIS]: Attempted to send to a blank channel.");
+            return false;
+        }
+
+        return true;
+    }
+
+    private JsonNode toTree(Object payload) {
+        try {
+            return manager.getObjectMapper().valueToTree(payload);
+        } catch (JacksonException exception) {
+            manager.getLogger().log(Level.SEVERE, "[REDIS]: Unable to serialize payload of type " + payload.getClass().getName() + ".", exception);
+            return null;
+        }
+    }
+
+    private String serialize(String topicName, RedisMessage message) {
+        String serialized;
+
+        try {
+            serialized = manager.getObjectMapper().writeValueAsString(message);
+        } catch (JacksonException exception) {
+            manager.getLogger().log(Level.SEVERE, "[REDIS]: Unable to serialize message for '" + topicName + "'.", exception);
+            return null;
+        }
+
+        if (manager.isDebug()) {
+            manager.getLogger().info(String.format(OUTGOING_DEBUG_FORMAT, clientId, message.targetServerId(), serialized));
+        }
+
+        return serialized;
+    }
+
+    private boolean publish(String topicName, RedisMessage message) {
+        String serialized = serialize(topicName, message);
+
+        if (serialized == null) {
+            return false;
+        }
+
+        try {
+            getTopic(topicName).publish(serialized);
+        } catch (RuntimeException exception) {
+            manager.getLogger().log(Level.SEVERE, "[REDIS]: Unable to publish to '" + topicName + "'.", exception);
+            return false;
+        }
+
+        return true;
+    }
+
+    private CompletableFuture<Boolean> publishAsync(String topicName, RedisMessage message) {
+        String serialized = serialize(topicName, message);
+
+        if (serialized == null) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        try {
+            return getTopic(topicName).publishAsync(serialized).toCompletableFuture().handle((receivers, error) -> {
+                if (error == null) {
+                    return true;
+                }
+
+                manager.getLogger().log(Level.SEVERE, "[REDIS]: Unable to publish to '" + topicName + "'.", error);
+                return false;
+            });
+        } catch (RuntimeException exception) {
+            manager.getLogger().log(Level.SEVERE, "[REDIS]: Unable to publish to '" + topicName + "'.", exception);
+            return CompletableFuture.completedFuture(false);
+        }
+    }
+
+    private void subscribeChannel(String channel) {
+        subscriptionLock.lock();
+
+        try {
+            if (channelSubscriptions.containsKey(channel)) {
+                return;
+            }
+
+            int subscriptionId = getTopic(channel).addListener(String.class, (name, raw) -> receiveChannelMessage(channel, raw));
+            channelSubscriptions.put(channel, subscriptionId);
+        } finally {
+            subscriptionLock.unlock();
+        }
+    }
+
+    private void subscribeResponses() {
+        subscriptionLock.lock();
+
+        try {
+            if (responseSubscription != null) {
+                return;
+            }
+
+            responseSubscription = getTopic(responseTopicName(getServerId(), clientId)).addListener(String.class, (name, raw) -> receiveResponse(raw));
+        } finally {
+            subscriptionLock.unlock();
+        }
+    }
+
+    private void receiveChannelMessage(String channel, String raw) {
+        RedisMessage message = parse(raw, channel);
+
+        if (message == null) {
             return;
         }
 
-        if (redisManager.isDebug()) {
-            Logger.getGlobal().info(String.format(TIMED_RESPONSE_DEBUG_FORMAT, component.getSource().getClientId(), component.getTargetServerId(), redisManager.getGson().toJson(component)));
+        if (manager.isDebug()) {
+            manager.getLogger().info(String.format(INCOMING_DEBUG_FORMAT, message.sourceClientId(), message.targetServerId(), raw));
         }
 
-        getTopic(REQUEST_TOPIC_ID).publish(redisManager.getGson().toJson(component));
+        String targetServerId = message.targetServerId();
+
+        if (targetServerId != null && !targetServerId.isBlank() && !getServerId().equalsIgnoreCase(targetServerId)) {
+            return;
+        }
+
+        boolean fromThisServer = getServerId().equalsIgnoreCase(message.sourceServerId());
+
+        for (RedisMessageListener<?> listener : listeners) {
+            if (!listener.getChannel().equals(channel)) {
+                continue;
+            }
+
+            if (fromThisServer && !listener.isSelfActivation()) {
+                continue;
+            }
+
+            deliver(listener, message);
+        }
     }
 
-    private List<RedisMessageListener> getListeners(@NotNull String channel) {
-        return listeners.stream().filter(l -> l.getChannelName().equalsIgnoreCase(channel)).toList();
+    private <T> void deliver(RedisMessageListener<T> listener, RedisMessage message) {
+        T payload;
+
+        try {
+            payload = manager.getObjectMapper().treeToValue(message.payload(), listener.getPayloadType());
+        } catch (JacksonException exception) {
+            manager.getLogger().log(Level.WARNING, "[REDIS]: Message on channel '" + listener.getChannel() + "' could not be read as " + listener.getPayloadType().getSimpleName() + " for " + listener.getClass().getName() + ".", exception);
+            return;
+        }
+
+        if (payload == null) {
+            manager.getLogger().warning("[REDIS]: Message on channel '" + listener.getChannel() + "' had no payload for " + listener.getClass().getName() + ".");
+            return;
+        }
+
+        ReceivedMessage<T> received = new ReceivedMessage<>(this, message, payload);
+        runCallback("Listener " + listener.getClass().getName() + " on channel '" + listener.getChannel() + "'", () -> listener.onReceive(received));
+    }
+
+    private void receiveResponse(String raw) {
+        RedisMessage message = parse(raw, "response topic");
+
+        if (message == null) {
+            return;
+        }
+
+        if (manager.isDebug()) {
+            manager.getLogger().info(String.format(INCOMING_DEBUG_FORMAT, message.sourceClientId(), message.targetServerId(), raw));
+        }
+
+        UUID replyTo = message.replyTo();
+
+        if (replyTo == null) {
+            manager.getLogger().warning("[REDIS]: Received a response without a reply id.");
+            return;
+        }
+
+        RedisRequest<?> request = pendingRequests.get(replyTo);
+
+        if (request == null) {
+            return;
+        }
+
+        if (request.complete(message)) {
+            pendingRequests.remove(replyTo);
+        }
+    }
+
+    private void expireRequest(UUID requestId) {
+        RedisRequest<?> request = pendingRequests.remove(requestId);
+
+        if (request == null) {
+            return;
+        }
+
+        request.expire();
+    }
+
+    private RedisMessage parse(String raw, String source) {
+        RedisMessage message;
+
+        try {
+            message = manager.getObjectMapper().readValue(raw, RedisMessage.class);
+        } catch (JacksonException exception) {
+            manager.getLogger().log(Level.WARNING, "[REDIS]: Malformed message received on " + source + ".", exception);
+            return null;
+        }
+
+        if (message == null || message.id() == null || message.sourceServerId() == null || message.payload() == null) {
+            manager.getLogger().warning("[REDIS]: Incomplete message received on " + source + ".");
+            return null;
+        }
+
+        return message;
+    }
+
+    private boolean hasListeners(String channel) {
+        for (RedisMessageListener<?> listener : listeners) {
+            if (listener.getChannel().equals(channel)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void removeSubscription(String topicName, int subscriptionId) {
+        if (manager.getRedissonClient().isShutdown()) {
+            return;
+        }
+
+        try {
+            getTopic(topicName).removeListener(subscriptionId);
+        } catch (RuntimeException exception) {
+            manager.getLogger().log(Level.WARNING, "[REDIS]: Unable to unsubscribe from '" + topicName + "'.", exception);
+        }
     }
 
     private RTopic getTopic(String topicName) {
-        return redisManager.getRedissonClient().getTopic(topicName);
+        return manager.getRedissonClient().getTopic(topicName, StringCodec.INSTANCE);
     }
 
-    /**
-     * Retrieves the Redisson client instance used to interact with Redis.
-     * <p>
-     * This method provides access to the underlying {@link RedissonClient}
-     * which enables operations such as data storage, messaging, and synchronization
-     * across Redis.
-     *
-     * @return the {@link RedissonClient} instance managed by the {@code redisManager}.
-     */
-    public RedissonClient getRedisClient() {
-        return redisManager.getRedissonClient();
+    private static String responseTopicName(String serverId, String clientId) {
+        return String.format(RESPONSE_TOPIC_FORMAT, serverId, clientId);
     }
 
-    private void registerChannel(@NotNull String channelName) {
-        if (redisManager.getRedissonClient().getTopic(channelName).countListeners() >= 1) {
-            return;
-        }
-
-        RTopic topic = getTopic(channelName);
-
-        topic.addListener(String.class, (channel, msg) -> {
-            try {
-                ListenerComponent component = redisManager.getGson().fromJson(msg, ListenerComponent.class);
-
-                if (redisManager.isDebug()) {
-                    Logger.getGlobal().info(String.format(INCOMING_DEBUG_FORMAT, component.getSource().getClientId(), component.getTargetServerId(), msg));
-                }
-
-                if (component.getTargetServerId() != null && !component.getTargetServerId().isBlank() && !redisManager.getServerId().equalsIgnoreCase(component.getTargetServerId())) {
-                    return;
-                }
-
-                getListeners(channelName).forEach(messageListener -> {
-                    if (component.getSource().getServerId().equalsIgnoreCase(messageListener.getClient().getServerId()) && !messageListener.isSelfActivation()) {
-                        return;
-                    }
-
-                    messageListener.onReceive(component);
-                });
-            } catch (Exception e) {
-                Logger.getGlobal().log(Level.SEVERE, "Error while processing incoming message!", e);
-            }
-        });
-    }
-
-    private void registerRequestTopic() {
-        RTopic topic = getTopic(REQUEST_TOPIC_ID);
-
-        topic.addListener(String.class, (channel, msg) -> {
-            try {
-                ListenerComponent component = redisManager.getGson().fromJson(msg, ListenerComponent.class);
-
-                if (redisManager.isDebug()) {
-                    Logger.getGlobal().info(String.format(INCOMING_DEBUG_FORMAT, component.getSource().getClientId(), component.getTargetServerId(), msg));
-                }
-
-                component.getTimedResponses().forEach(response -> {
-                    if (component.getSource().getServerId().equalsIgnoreCase(redisManager.getServerId()) && !component.isAllowRequestSelfActivation()) {
-                        return;
-                    }
-
-                    RedisTimedRequest timedRequest = timedRequests.stream().filter(request -> request.getUniqueId().equals(response.getUniqueId()))
-                            .findFirst().orElse(null);
-
-                    if (timedRequest == null) {
-                        return;
-                    }
-
-                    if (requestTimers.containsKey(timedRequest)) {
-                        requestTimers.get(timedRequest).cancel();
-                    }
-
-                    timedRequests.remove(timedRequest);
-
-                    timedRequest.getSuccessCallback().accept(component);
-                });
-            } catch (JsonSyntaxException e) {
-                Logger.getGlobal().log(Level.WARNING, "Malformed JSON published to request topic!", e);
-            }
-        });
+    public @NotNull List<RedisMessageListener<?>> getListeners() {
+        return List.copyOf(listeners);
     }
 
 }

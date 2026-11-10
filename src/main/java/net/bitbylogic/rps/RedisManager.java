@@ -1,52 +1,162 @@
 package net.bitbylogic.rps;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import lombok.Getter;
 import lombok.Setter;
 import net.bitbylogic.rps.client.RedisClient;
-import net.bitbylogic.rps.timed.RedisTimedRequest;
-import org.jetbrains.annotations.CheckReturnValue;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Level;
+import java.util.concurrent.Executor;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Logger;
 
-@Getter
-public class RedisManager {
-
-    private static final Gson GSON = new GsonBuilder().enableComplexMapKeySerialization()
-            .registerTypeHierarchyAdapter(RedisTimedRequest.class, new TimedRequestSerializer()).create();
+public class RedisManager implements AutoCloseable {
 
     private final ConcurrentHashMap<String, RedisClient> clients = new ConcurrentHashMap<>();
+    private final ReentrantLock clientLock = new ReentrantLock();
+
+    @Getter
     private final String serverId;
 
-    private RedissonClient redissonClient;
+    @Getter
+    private final RedissonClient redissonClient;
 
+    @Getter
+    private final ObjectMapper objectMapper;
+
+    @Getter
     @Setter
-    private boolean debug;
+    private volatile boolean debug;
 
-    /**
-     * Constructs a new RedisManager instance with the specified host, port, password, and server ID.
-     * Initializes the RedissonClient with a single server configuration.
-     *
-     * @param host      the hostname or IP address of the Redis server; must not be null
-     * @param port      the port number for the Redis server
-     * @param password  the password for the Redis server; can be null or empty if no authentication is required
-     * @param serverId  the unique identifier for the server; must not be null
-     */
+    @Getter
+    private volatile @NotNull Logger logger = Logger.getLogger("Bits-RPS");
+
+    @Getter
+    private volatile @NotNull Executor callbackExecutor = Runnable::run;
+
     public RedisManager(@NotNull String host, int port, @Nullable String password, @NotNull String serverId) {
-        this.serverId = serverId;
+        this(createConfig(host, port, password), serverId);
+    }
 
+    public RedisManager(@NotNull Config redisConfig, @NotNull String serverId) {
+        this(redisConfig, serverId, JsonMapper.builder().build());
+    }
+
+    public RedisManager(@NotNull Config redisConfig, @NotNull String serverId, @NotNull ObjectMapper objectMapper) {
+        this.serverId = serverId;
+        this.objectMapper = objectMapper;
+        this.redissonClient = Redisson.create(redisConfig);
+    }
+
+    public void setLogger(@NotNull Logger logger) {
+        this.logger = logger;
+    }
+
+    public void setCallbackExecutor(@NotNull Executor callbackExecutor) {
+        this.callbackExecutor = callbackExecutor;
+    }
+
+    public @NotNull RedisClient registerClient(@NotNull String id) {
+        String key = id.toLowerCase();
+
+        clientLock.lock();
+
+        try {
+            RedisClient existing = clients.get(key);
+
+            if (existing != null && !existing.isClosed()) {
+                logger.warning("[REDIS]: Attempted to register RedisClient with duplicate ID '" + id + "'");
+                return existing;
+            }
+
+            RedisClient client = new RedisClient(this, id);
+            clients.put(key, client);
+
+            return client;
+        } finally {
+            clientLock.unlock();
+        }
+    }
+
+    public boolean unregisterClient(@NotNull String id) {
+        RedisClient client;
+
+        clientLock.lock();
+
+        try {
+            client = clients.remove(id.toLowerCase());
+        } finally {
+            clientLock.unlock();
+        }
+
+        if (client == null) {
+            return false;
+        }
+
+        client.close();
+        return true;
+    }
+
+    public boolean unregisterClient(@NotNull RedisClient client) {
+        boolean removed;
+
+        clientLock.lock();
+
+        try {
+            removed = clients.remove(client.getClientId().toLowerCase(), client);
+        } finally {
+            clientLock.unlock();
+        }
+
+        client.close();
+        return removed;
+    }
+
+    public @NotNull Optional<RedisClient> getClient(@NotNull String id) {
+        return Optional.ofNullable(clients.get(id.toLowerCase()));
+    }
+
+    public @NotNull List<RedisClient> getClients() {
+        return List.copyOf(clients.values());
+    }
+
+    @Override
+    public void close() {
+        List<RedisClient> registered;
+
+        clientLock.lock();
+
+        try {
+            registered = List.copyOf(clients.values());
+            clients.clear();
+        } finally {
+            clientLock.unlock();
+        }
+
+        for (RedisClient client : registered) {
+            client.close();
+        }
+
+        if (redissonClient.isShutdown()) {
+            return;
+        }
+
+        redissonClient.shutdown();
+    }
+
+    private static Config createConfig(String host, int port, String password) {
         Config config = new Config();
 
-        config.setPassword(password == null ? null : password.isEmpty() ? null : password)
+        config
                 .useSingleServer()
                 .setAddress(String.format("redis://%s:%s", host, port))
                 .setPingConnectionInterval(30_000)
@@ -56,60 +166,11 @@ public class RedisManager {
                 .setConnectionMinimumIdleSize(4)
                 .setConnectionPoolSize(32);
 
-        try {
-            redissonClient = Redisson.create(config);
-        } catch (Exception exception) {
-            Logger.getGlobal().log(Level.SEVERE, "[REDIS]: Unable to connect to redis, contact developer with error below.", exception);
-        }
-    }
-
-    /**
-     * Creates a new instance of the RedisManager class, initializing the
-     * RedissonClient instance with the given configuration.
-     *
-     * @param redisConfig the configuration object for the Redis connection; must not be null
-     * @param serverId    the unique identifier for the server; must not be null
-     */
-    public RedisManager(@NotNull Config redisConfig, @NotNull String serverId) {
-        this.serverId = serverId;
-
-        try {
-            redissonClient = Redisson.create(redisConfig);
-        } catch (Exception exception) {
-            Logger.getGlobal().log(Level.SEVERE, "[REDIS]: Unable to connect to redis, contact developer with error below.", exception);
-        }
-    }
-
-    /**
-     * Registers a new RedisClient with the specified ID. If a client with the same ID
-     * already exists, it returns the existing client instead of creating a new one.
-     *
-     * @param id the unique identifier for the RedisClient to register; must not be null
-     * @return the newly registered RedisClient instance, or the existing RedisClient
-     *         instance if a client with the same ID is already registered
-     */
-    @CheckReturnValue
-    public @NotNull RedisClient registerClient(@NotNull String id) {
-        String key = id.toLowerCase();
-
-        if (clients.containsKey(key)) {
-            Logger.getGlobal().warning("[REDIS]: Attempted to register RedisClient with duplicate ID '" + id + "'");
-            return clients.get(key);
+        if (password != null && !password.isEmpty()) {
+            config.setPassword(password);
         }
 
-        RedisClient client = new RedisClient(this, id);
-        clients.put(key, client);
-
-        return client;
-    }
-
-    /**
-     * Retrieves the instance of {@code Gson} used by the {@code RedisManager}.
-     *
-     * @return the {@code Gson} instance used for JSON serialization and deserialization.
-     */
-    public Gson getGson() {
-        return GSON;
+        return config;
     }
 
 }
